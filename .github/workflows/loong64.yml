@@ -1,0 +1,137 @@
+name: loong64
+on:
+  push:
+    branches:
+      - loong64-*
+    tags:
+      - release-loong64-*
+  pull_request:
+    branches:
+      - loong64-*
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:13
+    outputs:
+      RAW_VERSION: ${{ steps.extract.outputs.RAW_VERSION }}
+      COMPOSE_BRANCH: ${{ steps.extract.outputs.COMPOSE_BRANCH }}
+      RELEASE: ${{ steps.extract.outputs.RELEASE }}
+      IS_STABLE: ${{ steps.extract.outputs.IS_STABLE }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Print branch name
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "${{ github.base_ref }} (PR target)"
+          else
+            echo ${{ github.ref_name }}
+          fi
+      - name: Extract compose branch
+        id: extract
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            REF=${{ github.base_ref }}
+          else
+            REF=${{ github.ref_name }}
+          fi
+          echo "REF=$REF"
+          RAW_VERSION=$(echo $REF | awk -F'loong64-' '{print $2}')
+          echo "RAW_VERSION=$RAW_VERSION"
+          echo "RAW_VERSION=$RAW_VERSION" >> ${GITHUB_ENV}
+          echo "RAW_VERSION=$RAW_VERSION" >> ${GITHUB_OUTPUT}
+          COMPOSE_BRANCH=$(echo $RAW_VERSION | awk -F'+' '{print $1}')
+          echo "COMPOSE_BRANCH=$COMPOSE_BRANCH"
+          echo "COMPOSE_BRANCH=$COMPOSE_BRANCH" >> ${GITHUB_ENV}
+          echo "COMPOSE_BRANCH=$COMPOSE_BRANCH" >> ${GITHUB_OUTPUT}
+          RELEASE=$(echo $RAW_VERSION | awk -F'+' '{print $2}')
+          RELEASE=${RELEASE:-alpha.${{ github.run_number }}}
+          echo "RELEASE=$RELEASE"
+          echo "RELEASE=$RELEASE" >> ${GITHUB_ENV}
+          echo "RELEASE=$RELEASE" >> ${GITHUB_OUTPUT}
+          if echo "$RAW_VERSION" | grep -qE '[+].*(alpha|beta|rc)'; then
+            IS_STABLE=false
+          else
+            IS_STABLE=true
+          fi
+          echo "IS_STABLE=$IS_STABLE"
+          echo "IS_STABLE=$IS_STABLE" >> ${GITHUB_OUTPUT}
+      - name: Install build tools
+        run: |
+          apt update
+          apt install -y git make golang file
+      - name: Clone compose
+        run: |
+          git clone --branch ${{ env.COMPOSE_BRANCH }} --depth 1 https://github.com/docker/compose.git compose
+      - name: ls
+        run: ls -lah
+      - name: Install Docker Compose
+        run: |
+          apt remove $(dpkg --get-selections docker.io docker-compose docker-doc podman-docker containerd runc | cut -f1)
+          apt update
+          apt install -y ca-certificates curl
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          # Add the repository to Apt sources:
+          tee /etc/apt/sources.list.d/docker.sources <<EOF
+          Types: deb
+          URIs: https://download.docker.com/linux/debian
+          Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+          Components: stable
+          Architectures: $(dpkg --print-architecture)
+          Signed-By: /etc/apt/keyrings/docker.asc
+          EOF
+          apt update
+          apt install -y docker-ce-cli
+      - name: Verify Docker installation
+        run: |
+          ls -la /run/docker.sock 2>/dev/null || echo "/run/docker.sock not found"
+          echo "DOCKER_HOST=$DOCKER_HOST"
+          docker info
+      #- name: Apply patches
+      #  working-directory: compose
+      #  run: git apply ../*.patch
+      - name: Build compose
+        working-directory: compose
+        run: make
+      - name: Print binary SHA-256 checksums
+        working-directory: compose
+        run: |
+          find bin/* | xargs sha256sum
+      - name: Inspect binary file types
+        working-directory: compose
+        run: |
+          echo "=== bin ==="
+          file bin/build/*
+      - name: Upload binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compose-loong64-binaries
+          path: |
+            compose/build/docker
+      - name: Install QEMU binfmt for loong64
+        run: |
+          docker run --privileged --rm ghcr.io/loong64/binfmt --install all
+      - name: Print docker version
+        working-directory: compose
+        run: |
+          ./compose/bin/build/docker-compose -v
+      - name: Export system version
+        run: |
+          cat /etc/os-release > /tmp/build-os-release.txt
+          cat /tmp/build-os-release.txt
+      - name: Export installed packages
+        run: |
+          dpkg -l > /tmp/build-installed-packages.txt
+          cat /tmp/build-installed-packages.txt
+      - name: Upload system info
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compose-loong64-system-info
+          path: |
+            /tmp/build-installed-packages.txt
+            /tmp/build-os-release.txt
