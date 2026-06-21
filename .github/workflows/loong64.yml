@@ -112,14 +112,14 @@ jobs:
         with:
           name: compose-loong64-binaries
           path: |
-            compose/build/docker
+            compose/bin/build
       - name: Install QEMU binfmt for loong64
         run: |
-          docker run --privileged --rm ghcr.io/loong64/binfmt --install all
-      - name: Print docker version
+          docker-compose run --privileged --rm ghcr.io/loong64/binfmt --install all
+      - name: Print docker-compose version
         working-directory: compose
         run: |
-          ./compose/bin/build/docker-compose -v
+          bin/build/docker-compose -v
       - name: Export system version
         run: |
           cat /etc/os-release > /tmp/build-os-release.txt
