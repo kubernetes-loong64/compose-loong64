@@ -115,7 +115,7 @@ jobs:
         with:
           name: compose-loong64-binaries
           path: |
-            compose/bin/build
+            compose/bin/build/docker-compose
       - name: Install QEMU binfmt for loong64
         run: |
           docker run --privileged --rm ghcr.io/loong64/binfmt --install all
@@ -138,3 +138,367 @@ jobs:
           path: |
             /tmp/build-installed-packages.txt
             /tmp/build-os-release.txt
+
+  rpm-anolis:
+    needs: build
+    runs-on: ubuntu-latest
+    container: openanolis/anolisos:23.4
+    outputs:
+      ANOLIS_RPM_NAME: ${{ steps.rpm-file.outputs.ANOLIS_RPM_NAME }}
+      ANOLIS_VERSION: ${{ steps.extract-version.outputs.ANOLIS_VERSION }}
+    permissions:
+      contents: read
+    env:
+      RAW_VERSION: ${{ needs.build.outputs.RAW_VERSION }}
+      COMPOSE_BRANCH: ${{ needs.build.outputs.COMPOSE_BRANCH }}
+      RELEASE: ${{ needs.build.outputs.RELEASE }}
+      ARCH: loongarch64
+    steps:
+      - name: Install gzip
+        run: yum install -y gzip
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Extract version
+        id: extract-version
+        run: |
+          VERSION=$(echo $COMPOSE_BRANCH | awk -F'v' '{print $2}')
+          echo "VERSION=$VERSION"
+          echo "VERSION=$VERSION" >> ${GITHUB_ENV}
+          DIST=$(rpm --eval '%{dist}')
+          echo "DIST=$DIST"
+          echo "DIST=$DIST" >> ${GITHUB_ENV}
+          ANOLIS_VERSION=$(cat /etc/anolis-release | awk '{print $4}' | cut -d'.' -f1)
+          echo "ANOLIS_VERSION=$ANOLIS_VERSION"
+          echo "ANOLIS_VERSION=$ANOLIS_VERSION" >> ${GITHUB_OUTPUT}
+          echo "ANOLIS_VERSION=$ANOLIS_VERSION" >> ${GITHUB_ENV}
+      - name: Install build tools
+        run: yum install -y rpm-build rpmdevtools rpm-sign
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compose-loong64-binaries
+          path: artifacts
+      - name: Build RPM
+        run: |
+          rm -rf ~/rpmbuild
+          rpmdev-setuptree
+          find ~/rpmbuild
+          cp artifacts/docker-compose ~/rpmbuild/BUILD/
+          cp LICENSE ~/rpmbuild/BUILD/
+          cp docker-compose-plugin.spec ~/rpmbuild/SPECS/
+          rpmbuild -ba --target ${{ env.ARCH }} ~/rpmbuild/SPECS/docker-compose-plugin.spec \
+            --define "version ${{ env.VERSION }}" \
+            --define "release ${{ env.RELEASE }}"
+          mkdir -p rpms
+          find ~/rpmbuild/RPMS -name '*.rpm'
+          find ~/rpmbuild/RPMS -name '*.rpm' -exec cp -t rpms {} +
+      - name: List RPM files
+        id: rpm-file
+        run: |
+          ANOLIS_RPM_NAME=docker-compose-plugin-${{ env.VERSION }}-${{ env.RELEASE }}${{ env.DIST }}.${{ env.ARCH }}.rpm
+          echo "ANOLIS_RPM_NAME=$ANOLIS_RPM_NAME"
+          echo "ANOLIS_RPM_NAME=$ANOLIS_RPM_NAME" >> $GITHUB_OUTPUT
+          echo "ANOLIS_RPM_NAME=$ANOLIS_RPM_NAME" >> $GITHUB_ENV
+          echo "=== RPM file name: $ANOLIS_RPM_NAME ==="
+          sha256sum rpms/$ANOLIS_RPM_NAME
+          echo "=== RPM info ==="
+          rpm -qpi rpms/$ANOLIS_RPM_NAME
+          echo "=== RPM contents ==="
+          rpm2cpio rpms/$ANOLIS_RPM_NAME | cpio -it
+      - name: Import GPG key
+        run: |
+          export LANG=C.UTF-8
+          echo "${{ secrets.GPG_PRIVATE_KEY_BASE64 }}" | base64 -d | gpg --batch --import > /dev/null
+          echo "$(gpg --list-secret-keys --keyid-format LONG | grep -Eo '[A-F0-9]{40}' | head -1):6:" | gpg --import-ownertrust
+          GPG_KEY_ID=$(gpg --list-secret-keys --with-colons | grep '^sec:' | head -1 | cut -d: -f5)
+          echo "GPG_KEY_ID=$GPG_KEY_ID"
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> $GITHUB_ENV
+      - name: Configure rpmmacros
+        run: |
+          cat > ~/.rpmmacros << EOF
+          %_signature gpg
+          %_gpg_path ~/.gnupg
+          %_gpg_name ${{ env.GPG_KEY_ID }}
+          %_gpgbin /usr/bin/gpg2
+          %__gpg_sign_cmd %{__gpg} gpg --force-v3-sigs --digest-algo sha256 --batch --no-verbose --no-armor --no-secmem-warning -u "%{_gpg_name}" -sbo %{__signature_filename} %{__plaintext_filename}
+          EOF
+          gpg --armor --export "${GPG_KEY_ID}" > /tmp/gpg-pubkey.asc
+          rpm --import /tmp/gpg-pubkey.asc
+      - name: Sign RPM
+        run: |
+          echo "=== Signing RPM with GPG key: $GPG_KEY_ID ==="
+          rpm --addsign rpms/$ANOLIS_RPM_NAME
+          echo "=== Verifying RPM signature ==="
+          rpm --checksig rpms/$ANOLIS_RPM_NAME
+          echo "=== RPM file name: $ANOLIS_RPM_NAME ==="
+          sha256sum rpms/$ANOLIS_RPM_NAME
+          echo "=== RPM info ==="
+          rpm -qpi rpms/$ANOLIS_RPM_NAME
+          echo "=== RPM contents ==="
+          rpm2cpio rpms/$ANOLIS_RPM_NAME | cpio -it
+      - name: Upload RPM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compose-loong64-rpm
+          path: |
+            rpms/${{ env.ANOLIS_RPM_NAME }}
+      - name: Export system version
+        run: |
+          cat /etc/os-release > /tmp/rpm-anolis-os-release.txt
+          cat /tmp/rpm-anolis-os-release.txt
+      - name: Export installed packages
+        run: |
+          rpm -qa --queryformat '%{NAME}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n' | column -t -s $'\t' | sort -f > /tmp/rpm-anolis-installed-packages-rpm.txt
+          cat /tmp/rpm-anolis-installed-packages-rpm.txt
+      - name: Upload system info
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compose-loong64-rpm-system-info
+          path: |
+            /tmp/rpm-anolis-installed-packages-rpm.txt
+            /tmp/rpm-anolis-os-release.txt
+
+  deb-debian:
+    needs: build
+    runs-on: ubuntu-latest
+    container: debian:13
+    outputs:
+      DEBIAN_DEB_NAME: ${{ steps.deb-file.outputs.DEBIAN_DEB_NAME }}
+      DEBIAN_VERSION_CODENAME: ${{ steps.extract-version.outputs.DEBIAN_VERSION_CODENAME }}
+    permissions:
+      contents: read
+    env:
+      RAW_VERSION: ${{ needs.build.outputs.RAW_VERSION }}
+      COMPOSE_BRANCH: ${{ needs.build.outputs.COMPOSE_BRANCH }}
+      RELEASE: ${{ needs.build.outputs.RELEASE }}
+      ARCH: loong64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install build tools
+        run: |
+          apt update
+          apt install -y file
+      - name: Extract version
+        id: extract-version
+        run: |
+          VERSION=$(echo $COMPOSE_BRANCH | awk -F'v' '{print $2}')
+          echo "VERSION=$VERSION"
+          echo "VERSION=$VERSION" >> ${GITHUB_ENV}
+          ID_VERSION_ID=$(sh -c '. /etc/os-release && echo "${ID}.${VERSION_ID}"')
+          echo "ID_VERSION_ID=$ID_VERSION_ID"
+          echo "ID_VERSION_ID=$ID_VERSION_ID" >> ${GITHUB_ENV}
+          DEBIAN_VERSION_CODENAME=$(sh -c '. /etc/os-release && echo "${VERSION_CODENAME}"')
+          echo "DEBIAN_VERSION_CODENAME=$DEBIAN_VERSION_CODENAME"
+          echo "DEBIAN_VERSION_CODENAME=$DEBIAN_VERSION_CODENAME" >> ${GITHUB_OUTPUT}
+          echo "DEBIAN_VERSION_CODENAME=$DEBIAN_VERSION_CODENAME" >> ${GITHUB_ENV}
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compose-loong64-binaries
+          path: artifacts
+      - name: Build DEB
+        run: |
+          PKG_ROOT=$(mktemp -d)
+          mkdir -p $PKG_ROOT/usr/bin
+          mkdir -p $PKG_ROOT/usr/libexec/docker/cli-plugins
+          mkdir -p $PKG_ROOT/usr/share/doc/docker-compose-plugin
+          mkdir -p $PKG_ROOT/DEBIAN
+
+          install -m 755 artifacts/docker-compose $PKG_ROOT/usr/bin/docker-compose
+          install -m 755 artifacts/docker-compose $PKG_ROOT/usr/libexec/docker/cli-plugins/docker-compose
+          install -m 644 LICENSE $PKG_ROOT/usr/share/doc/docker-compose-plugin/copyright
+
+          cat > $PKG_ROOT/DEBIAN/control << EOF
+          Package: docker-compose-plugin
+          Version: ${{ env.VERSION }}-${{ env.RELEASE }}~${{ env.ID_VERSION_ID }}~${{ env.DEBIAN_VERSION_CODENAME }}
+          Architecture: ${{ env.ARCH }}
+          Maintainer: 徐晓伟 <xuxiaowei@xuxiaowei.com.cn>
+          Description: Docker compose plugin (loong64)
+           Docker compose plugin binary for the loong64 (LoongArch) architecture.
+          Homepage: https://github.com/kubernetes-loong64/compose-loong64
+          Section: admin
+          Priority: optional
+          EOF
+
+          mkdir -p debs
+          dpkg-deb --build $PKG_ROOT debs/
+
+          find debs -name '*.deb'
+          # Rename: replace ~ with . in filename (GitHub releases / URLs don't like ~)
+          for f in debs/*.deb; do
+            new_name=$(echo "$f" | tr '~' '.')
+            if [ "$f" != "$new_name" ]; then
+              mv "$f" "$new_name"
+              echo "Renamed: $f -> $new_name"
+            fi
+          done
+      - name: List DEB files
+        id: deb-file
+        run: |
+          DEBIAN_DEB_NAME=docker-compose-plugin_${{ env.VERSION }}-${{ env.RELEASE }}.${{ env.ID_VERSION_ID }}.${{ env.DEBIAN_VERSION_CODENAME }}_${{ env.ARCH }}.deb
+          echo "DEBIAN_DEB_NAME=$DEBIAN_DEB_NAME"
+          echo "DEBIAN_DEB_NAME=$DEBIAN_DEB_NAME" >> $GITHUB_OUTPUT
+          echo "DEBIAN_DEB_NAME=$DEBIAN_DEB_NAME" >> $GITHUB_ENV
+          echo "=== DEB file name: $DEBIAN_DEB_NAME ==="
+          sha256sum debs/$DEBIAN_DEB_NAME
+          echo "=== DEB info ==="
+          dpkg --info debs/$DEBIAN_DEB_NAME
+          echo "=== DEB contents ==="
+          dpkg --contents debs/$DEBIAN_DEB_NAME
+      - name: Upload DEB
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compose-loong64-deb
+          path: |
+            debs/${{ env.DEBIAN_DEB_NAME }}
+      - name: Export system version
+        run: |
+          cat /etc/os-release > /tmp/deb-debian-os-release.txt
+          cat /tmp/deb-debian-os-release.txt
+      - name: Export installed packages
+        run: |
+          dpkg -l > /tmp/deb-debian-installed-packages-packages.txt
+          cat /tmp/deb-debian-installed-packages-packages.txt
+      - name: Upload system info
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compose-loong64-deb-system-info
+          path: |
+            /tmp/deb-debian-installed-packages-packages.txt
+            /tmp/deb-debian-os-release.txt
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [ build, rpm-anolis, deb-debian ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      IS_STABLE: ${{ needs.build.outputs.IS_STABLE }}
+      BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+      ANOLIS_RPM_NAME: ${{ needs.rpm-anolis.outputs.ANOLIS_RPM_NAME }}
+      DEBIAN_DEB_NAME: ${{ needs.deb-debian.outputs.DEBIAN_DEB_NAME }}
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compose-loong64-binaries
+          path: loong64-artifacts
+      - name: Download system info
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compose-loong64-system-info
+          path: loong64-artifacts
+      - name: Download RPM system info
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compose-loong64-rpm-system-info
+          path: loong64-artifacts
+      - name: Download DEB system info
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compose-loong64-deb-system-info
+          path: loong64-artifacts
+      - name: Download RPM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compose-loong64-rpm
+          path: loong64-artifacts
+      - name: Download DEB
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compose-loong64-deb
+          path: loong64-artifacts
+      - name: List release artifacts
+        run: |
+          find loong64-artifacts -type f
+      - name: Import GPG key
+        run: |
+          export LANG=C.UTF-8
+          echo "${{ secrets.GPG_PRIVATE_KEY_BASE64 }}" | base64 -d | gpg --batch --import > /dev/null
+          echo "$(gpg --list-secret-keys --keyid-format LONG | grep -Eo '[A-F0-9]{40}' | head -1):6:" | gpg --import-ownertrust
+      - name: Sign artifacts
+        run: |
+          find loong64-artifacts -type f | while read -r file; do
+            gpg --batch --detach-sign --armor "$file"
+            echo "Signed: $file"
+            gpg --verify "$file".asc "$file"
+          done
+      - name: Generate release body
+        run: |
+          cat > release-body.md <<'BODYEOF'
+          ## Artifacts
+
+          | File                         | Download                                                                     |
+          |------------------------------|------------------------------------------------------------------------------|
+          | `docker-compose`             | [docker-compose](${{ env.BASE_URL }}/docker-compose)                         |
+          | `${{ env.ANOLIS_RPM_NAME }}` | [${{ env.ANOLIS_RPM_NAME }}](${{ env.BASE_URL }}/${{ env.ANOLIS_RPM_NAME }}) |
+          | `${{ env.DEBIAN_DEB_NAME }}` | [${{ env.DEBIAN_DEB_NAME }}](${{ env.BASE_URL }}/${{ env.DEBIAN_DEB_NAME }}) |
+
+          Each file has a corresponding `.asc` detached GPG signature.
+
+          ```shell
+          # Binary
+          curl -LO ${{ env.BASE_URL }}/docker-compose
+          curl -LO ${{ env.BASE_URL }}/docker-compose.asc
+
+          # RPM (Anolis)
+          curl -LO ${{ env.BASE_URL }}/${{ env.ANOLIS_RPM_NAME }}
+          curl -LO ${{ env.BASE_URL }}/${{ env.ANOLIS_RPM_NAME }}.asc
+
+          # DEB (Debian)
+          curl -LO ${{ env.BASE_URL }}/${{ env.DEBIAN_DEB_NAME }}
+          curl -LO ${{ env.BASE_URL }}/${{ env.DEBIAN_DEB_NAME }}.asc
+          ```
+
+          ## Verifying releases
+
+          ```shell
+          gpg --keyserver keys.openpgp.org --recv-keys FCF8724722CCBF9F51B1FBE376532BE7E3013105
+          echo "FCF8724722CCBF9F51B1FBE376532BE7E3013105:6:" | gpg --import-ownertrust
+          gpg --verify <file>.asc <file>
+          ```
+          BODYEOF
+      - name: Create Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          name: ${{ github.ref_name }}
+          body_path: release-body.md
+          prerelease: ${{ env.IS_STABLE == 'false' }}
+          make_latest: ${{ env.IS_STABLE == 'true' && 'legacy' || 'false' }}
+          files: |
+            loong64-artifacts/**
+
+  trigger-gitlab:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [ build, rpm-anolis, deb-debian, release ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      IS_STABLE: ${{ needs.build.outputs.IS_STABLE }}
+      BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+      ANOLIS_RPM_NAME: ${{ needs.rpm-anolis.outputs.ANOLIS_RPM_NAME }}
+      ANOLIS_VERSION: ${{ needs.rpm-anolis.outputs.ANOLIS_VERSION }}
+      DEBIAN_DEB_NAME: ${{ needs.deb-debian.outputs.DEBIAN_DEB_NAME }}
+      DEBIAN_VERSION_CODENAME: ${{ needs.deb-debian.outputs.DEBIAN_VERSION_CODENAME }}
+      GITLAB_API_URL: ${{ vars.GITLAB_API_URL || 'https://gitlab.xuxiaowei.com.cn' }}
+      GITLAB_PROJECT_ID: ${{ vars.GITLAB_PROJECT_ID || '590' }}
+      GITLAB_REF: ${{ vars.GITLAB_REF || 'sync' }}
+    steps:
+      - name: Trigger GitLab CI
+        env:
+          ANOLIS_RPM_URL: ${{ env.BASE_URL }}/${{ env.ANOLIS_RPM_NAME }}
+          DEBIAN_DEB_URL: ${{ env.BASE_URL }}/${{ env.DEBIAN_DEB_NAME }}
+        run: |
+          curl -X POST \
+          --fail \
+          -F token=${{ secrets.GITLAB_TRIGGER_TOKEN }} \
+          -F ref=${{ env.GITLAB_REF }} \
+          -F "variables[ANOLIS_VERSION]=${{ env.ANOLIS_VERSION }}" \
+          -F "variables[DEBIAN_VERSION_CODENAME]=${{ env.DEBIAN_VERSION_CODENAME }}" \
+          -F "variables[IS_STABLE]=${{ env.IS_STABLE }}" \
+          -F "variables[ANOLIS_RPM_URL]=${{ env.ANOLIS_RPM_URL }}" \
+          -F "variables[DEBIAN_DEB_URL]=${{ env.DEBIAN_DEB_URL }}" \
+          ${{ env.GITLAB_API_URL }}/api/v4/projects/${{ env.GITLAB_PROJECT_ID }}/trigger/pipeline
