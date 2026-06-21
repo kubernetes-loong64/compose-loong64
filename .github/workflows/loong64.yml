@@ -97,6 +97,9 @@ jobs:
       #  run: git apply ../*.patch
       - name: Build compose
         working-directory: compose
+        env:
+          GOOS: linux
+          GOARCH: loong64
         run: make
       - name: Print binary SHA-256 checksums
         working-directory: compose
