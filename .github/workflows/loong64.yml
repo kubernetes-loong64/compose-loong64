@@ -101,7 +101,7 @@ jobs:
       - name: Print binary SHA-256 checksums
         working-directory: compose
         run: |
-          find bin/* | xargs sha256sum
+          find bin/build/* | xargs sha256sum
       - name: Inspect binary file types
         working-directory: compose
         run: |
