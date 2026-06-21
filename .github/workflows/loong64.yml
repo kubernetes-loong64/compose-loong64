@@ -115,7 +115,7 @@ jobs:
             compose/bin/build
       - name: Install QEMU binfmt for loong64
         run: |
-          docker-compose run --privileged --rm ghcr.io/loong64/binfmt --install all
+          docker run --privileged --rm ghcr.io/loong64/binfmt --install all
       - name: Print docker-compose version
         working-directory: compose
         run: |
