@@ -68,7 +68,7 @@ jobs:
           git clone --branch ${{ env.COMPOSE_BRANCH }} --depth 1 https://github.com/docker/compose.git compose
       - name: ls
         run: ls -lah
-      - name: Install Docker Compose
+      - name: Install Docker CLI
         run: |
           apt remove $(dpkg --get-selections docker.io docker-compose docker-doc podman-docker containerd runc | cut -f1)
           apt update
