@@ -16,12 +16,12 @@ GitHub Actions 工作流克隆指定版本的 docker/compose，在 Debian 13 容
 
 ## 分支命名
 
-推送名为 `loong64-v<version>`（例如 `loong64-v5.2.0`）的分支以触发构建。
-附加 `+<build>`（例如 `loong64-v5.2.0+0`）以包含构建元数据。
+推送名为 `loong64-v<version>`（例如 `loong64-v5.3.0`）的分支以触发构建。
+附加 `+<build>`（例如 `loong64-v5.3.0+0`）以包含构建元数据。
 
 ## [发布](https://github.com/kubernetes-loong64/compose-loong64/releases)
 
-推送与 `release-loong64-v<version>` 匹配的标签（例如 `release-loong64-v5.2.0+0`）
+推送与 `release-loong64-v<version>` 匹配的标签（例如 `release-loong64-v5.3.0+0`）
 即可发布包含构建好的二进制文件的 GitHub Release。
 
 `+<build>` 后缀提供构建元数据（例如 `+0`、`+1-alpha.1`）。
