@@ -17,12 +17,12 @@ rationale behind the Debian 13 container choice.
 
 ## Branch naming
 
-Push a branch named `loong64-v<version>` (e.g. `loong64-v5.4.0`) to trigger a build. Append
-`+<build>` (e.g. `loong64-v5.4.0+0`) to include build metadata.
+Push a branch named `loong64-v<version>` (e.g. `loong64-v5.5.0`) to trigger a build. Append
+`+<build>` (e.g. `loong64-v5.5.0+0`) to include build metadata.
 
 ## [Release](https://github.com/kubernetes-loong64/compose-loong64/releases)
 
-Push a tag matching `release-loong64-v<version>` (e.g. `release-loong64-v5.4.0+0`) to publish
+Push a tag matching `release-loong64-v<version>` (e.g. `release-loong64-v5.5.0+0`) to publish
 a GitHub Release with the built binaries.
 
 The `+<build>` suffix provides build metadata (e.g. `+0`, `+1-alpha.1`).
